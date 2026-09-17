@@ -1,12 +1,12 @@
 """
-1-Hour Range Strategy Bot (BTCUSD) - Telegram Alerts Only
+4-Hour Range Strategy Bot (BTCUSD) - Telegram Alerts Only
 ===========================================================
 
 Strategy (from Strategy_Components.pdf):
-- Setup TF: 1H, timezone = New York
-- Range = High/Low of the FIRST fully-closed 1H candle of the NY day (00:00-01:00 NY)
+- Setup TF: 4H, timezone = New York
+- Range = High/Low of the FIRST fully-closed 4H candle of the NY day (00:00-04:00 NY)
 - Execution TF: 5m
-- Breakout: 5m candle CLOSES fully outside the 1H range (wick alone doesn't count)
+- Breakout: 5m candle CLOSES fully outside the 4H range (wick alone doesn't count)
 - Re-entry: a LATER 5m candle CLOSES back inside the range, same trading day
   -> Short trigger: closed above range high, then closed back inside  => SHORT
   -> Long trigger:  closed below range low, then closed back inside   => LONG
@@ -15,6 +15,9 @@ Strategy (from Strategy_Components.pdf):
 - Multiple valid setups per day are allowed.
 
 This bot only sends Telegram alerts - it does not place trades.
+
+Note: yfinance has no native 4h interval, so the 4H range is built by combining
+the four 1h candles spanning 00:00-04:00 NY time.
 """
 
 import os
@@ -33,6 +36,7 @@ TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 SYMBOL = "BTC-USD"          # yfinance ticker for BTCUSD
 DISPLAY_SYMBOL = "BTCUSD"
 NY_TZ = pytz.timezone("America/New_York")
+RANGE_HOURS = 4              # first N hours of the NY day define the range
 POLL_SECONDS = 30           # how often to check for new closed 5m candles
 RR = 2.0                    # take-profit risk:reward multiple
 
@@ -40,11 +44,10 @@ STATE = {
     "date": None,           # NY calendar date the current range belongs to
     "range_high": None,
     "range_low": None,
-    "range_ready": False,   # True once first 1H candle of the day has closed
+    "range_ready": False,   # True once first 4H block of the day has fully closed
     "breakout_dir": None,   # "up" or "down" once a breakout close happens
     "breakout_extreme": None,  # extreme price reached during the breakout leg
     "last_5m_ts": None,     # last processed 5m candle timestamp
-    "last_1h_ts": None,     # last processed 1h candle timestamp
     "trades_today": 0,
 }
 
@@ -105,7 +108,8 @@ def reset_state_for_new_day(day):
 
 
 def update_range(df_1h):
-    """Find the first FULLY CLOSED 1H candle (00:00-01:00 NY) of today and lock the range."""
+    """Find the first FULLY CLOSED 4H block (00:00-04:00 NY) of today and lock the range,
+    by combining the four 1h candles (hours 0,1,2,3) that make up that block."""
     today = now_ny().date()
 
     if STATE["date"] != today:
@@ -114,24 +118,26 @@ def update_range(df_1h):
     if STATE["range_ready"]:
         return
 
-    # Look for the candle whose NY-local hour == 0 (00:00) for today, and which has fully closed
-    for ts, row in df_1h.iterrows():
-        if ts.date() == today and ts.hour == 0:
-            candle_close_time = ts + timedelta(hours=1)
-            if now_ny() >= candle_close_time:
-                STATE["range_high"] = float(row["High"])
-                STATE["range_low"] = float(row["Low"])
-                STATE["range_ready"] = True
-                STATE["last_1h_ts"] = ts
-                msg = (
-                    f"📊 *{DISPLAY_SYMBOL} 1H Range Locked* ({today})\n"
-                    f"High: `{STATE['range_high']:.2f}`\n"
-                    f"Low: `{STATE['range_low']:.2f}`\n"
-                    f"Watching 5m for breakout + re-entry..."
-                )
-                log.info(msg.replace("\n", " | "))
-                send_telegram(msg)
-            break
+    block_end = NY_TZ.localize(datetime.combine(today, datetime.min.time())) + timedelta(hours=RANGE_HOURS)
+    if now_ny() < block_end:
+        return  # the 4H block hasn't fully closed yet
+
+    todays_morning = df_1h[(df_1h.index.date == today) & (df_1h.index.hour < RANGE_HOURS)]
+    if len(todays_morning) < RANGE_HOURS:
+        log.warning(f"Only {len(todays_morning)}/{RANGE_HOURS} hourly candles available for today's 4H range yet.")
+        return
+
+    STATE["range_high"] = float(todays_morning["High"].max())
+    STATE["range_low"] = float(todays_morning["Low"].min())
+    STATE["range_ready"] = True
+    msg = (
+        f"📊 *{DISPLAY_SYMBOL} 4H Range Locked* ({today})\n"
+        f"High: `{STATE['range_high']:.2f}`\n"
+        f"Low: `{STATE['range_low']:.2f}`\n"
+        f"Watching 5m for breakout + re-entry..."
+    )
+    log.info(msg.replace("\n", " | "))
+    send_telegram(msg)
 
 
 def check_breakout_and_entry(df_5m):
@@ -219,8 +225,8 @@ def check_breakout_and_entry(df_5m):
 
 
 def main():
-    log.info("1-Hour Range Strategy bot starting (BTCUSD, Telegram alerts only)...")
-    send_telegram(f"🤖 1-Hour Range Bot started for {DISPLAY_SYMBOL}. Monitoring NY midnight 1H range + 5m breakout/re-entry.")
+    log.info("4-Hour Range Strategy bot starting (BTCUSD, Telegram alerts only)...")
+    send_telegram(f"🤖 4-Hour Range Bot started for {DISPLAY_SYMBOL}. Monitoring NY midnight-4AM range + 5m breakout/re-entry.")
 
     while True:
         try:
