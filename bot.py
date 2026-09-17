@@ -16,8 +16,8 @@ Strategy (from Strategy_Components.pdf):
 
 This bot only sends Telegram alerts - it does not place trades.
 
-Note: yfinance has no native 4h interval, so the 4H range is built by combining
-the four 1h candles spanning 00:00-04:00 NY time.
+Data source: Binance public REST API (spot BTCUSDT klines) - real-time, reliable,
+and far more accurate/liquid than delayed feeds like Yahoo Finance for crypto.
 """
 
 import os
@@ -25,7 +25,6 @@ import time
 import logging
 from datetime import datetime, timedelta
 import pytz
-import yfinance as yf
 import pandas as pd
 import requests
 
@@ -33,11 +32,12 @@ import requests
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
-SYMBOL = "BTC-USD"          # yfinance ticker for BTCUSD
+BINANCE_SYMBOL = "BTCUSDT"   # Binance spot ticker
 DISPLAY_SYMBOL = "BTCUSD"
+BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
 NY_TZ = pytz.timezone("America/New_York")
 RANGE_HOURS = 4              # first N hours of the NY day define the range
-POLL_SECONDS = 30           # how often to check for new closed 5m candles
+POLL_SECONDS = 20           # how often to check for new closed 5m candles
 RR = 2.0                    # take-profit risk:reward multiple
 
 STATE = {
@@ -69,31 +69,37 @@ def now_ny():
     return datetime.now(NY_TZ)
 
 
-def _flatten_columns(df):
-    """Newer yfinance versions return MultiIndex columns even for a single ticker."""
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
+def fetch_klines(interval: str, limit: int) -> pd.DataFrame:
+    """Fetch candles from Binance public API, indexed by candle OPEN time in NY timezone."""
+    params = {"symbol": BINANCE_SYMBOL, "interval": interval, "limit": limit}
+    r = requests.get(BINANCE_KLINES_URL, params=params, timeout=10)
+    r.raise_for_status()
+    data = r.json()
+    if not data:
+        return pd.DataFrame()
+
+    rows = []
+    for k in data:
+        open_time = datetime.fromtimestamp(k[0] / 1000, tz=pytz.UTC).astimezone(NY_TZ)
+        rows.append({
+            "open_time": open_time,
+            "Open": float(k[1]),
+            "High": float(k[2]),
+            "Low": float(k[3]),
+            "Close": float(k[4]),
+        })
+    df = pd.DataFrame(rows).set_index("open_time")
     return df
 
 
 def get_1h_data():
-    """Fetch recent 1H candles, indexed in NY time."""
-    df = yf.download(SYMBOL, period="5d", interval="1h", progress=False, auto_adjust=False)
-    if df.empty:
-        return df
-    df = _flatten_columns(df)
-    df.index = df.index.tz_convert(NY_TZ)
-    return df
+    """Fetch recent 1H candles from Binance, indexed in NY time."""
+    return fetch_klines("1h", limit=72)  # last 3 days
 
 
 def get_5m_data():
-    """Fetch recent 5m candles, indexed in NY time."""
-    df = yf.download(SYMBOL, period="2d", interval="5m", progress=False, auto_adjust=False)
-    if df.empty:
-        return df
-    df = _flatten_columns(df)
-    df.index = df.index.tz_convert(NY_TZ)
-    return df
+    """Fetch recent 5m candles from Binance, indexed in NY time."""
+    return fetch_klines("5m", limit=576)  # last 2 days
 
 
 def reset_state_for_new_day(day):
