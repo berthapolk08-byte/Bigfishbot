@@ -280,6 +280,13 @@ def main():
 
     send_telegram(f"🤖 4-Hour Range Bot (re)started for {DISPLAY_SYMBOL}. Live signals from now on.")
 
+    startup_price = get_live_price()
+    if startup_price is not None:
+        send_telegram(
+            f"🔎 *Live price check* - {DISPLAY_SYMBOL}: `{startup_price:.2f}`\n"
+            f"Compare this to your chart right now to confirm the feed is accurate."
+        )
+
     while True:
         try:
             df_1h = get_1h_data()
