@@ -16,8 +16,9 @@ Strategy (from Strategy_Components.pdf):
 
 This bot only sends Telegram alerts - it does not place trades.
 
-Data source: Binance public REST API (spot BTCUSDT klines) - real-time, reliable,
-and far more accurate/liquid than delayed feeds like Yahoo Finance for crypto.
+Data source: Binance.US public REST API (spot BTCUSD klines) - real-time, reliable,
+and not geo-blocked for US-hosted servers (unlike Binance.com's global API, which
+returns HTTP 451 for US-region IPs such as Railway's default US datacenters).
 """
 
 import os
@@ -32,9 +33,11 @@ import requests
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
-BINANCE_SYMBOL = "BTCUSDT"   # Binance spot ticker
+BINANCE_SYMBOL = "BTCUSD"    # Binance.US spot ticker (uses USD pairs directly, not USDT)
 DISPLAY_SYMBOL = "BTCUSD"
-BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
+BINANCE_BASE_URL = "https://api.binance.us/api/v3"
+BINANCE_KLINES_URL = f"{BINANCE_BASE_URL}/klines"
+BINANCE_TICKER_URL = f"{BINANCE_BASE_URL}/ticker/price"
 NY_TZ = pytz.timezone("America/New_York")
 RANGE_HOURS = 4              # first N hours of the NY day define the range
 POLL_SECONDS = 10           # how often to check for new closed 5m candles
@@ -103,11 +106,11 @@ def get_5m_data():
 
 
 def get_live_price(fallback=None):
-    """Fetch the current live BTCUSDT price from Binance (real-time ticker, not a candle).
+    """Fetch the current live BTCUSD price from Binance.US (real-time ticker, not a candle).
     Falls back to the given price (e.g. the candle close) if the live fetch fails,
     so a signal is never silently dropped due to a network hiccup."""
     try:
-        r = requests.get("https://api.binance.com/api/v3/ticker/price", params={"symbol": BINANCE_SYMBOL}, timeout=5)
+        r = requests.get(BINANCE_TICKER_URL, params={"symbol": BINANCE_SYMBOL}, timeout=5)
         r.raise_for_status()
         return float(r.json()["price"])
     except Exception as e:
