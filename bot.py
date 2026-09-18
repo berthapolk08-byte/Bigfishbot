@@ -146,8 +146,11 @@ def update_range(df_1h):
     send_telegram(msg)
 
 
-def check_breakout_and_entry(df_5m):
-    """Process newly closed 5m candles for breakout / re-entry logic."""
+def check_breakout_and_entry(df_5m, silent=False):
+    """Process newly closed 5m candles for breakout / re-entry logic.
+    When silent=True, state is updated (breakout tracking, trade count) but no
+    Telegram messages are sent - used to catch up on history after a restart
+    without replaying old signals as if they just happened."""
     if not STATE["range_ready"]:
         return
 
@@ -173,19 +176,21 @@ def check_breakout_and_entry(df_5m):
             if close > rh:
                 STATE["breakout_dir"] = "up"
                 STATE["breakout_extreme"] = high
-                send_telegram(
-                    f"⚠️ *{DISPLAY_SYMBOL} Breakout ABOVE range*\n"
-                    f"5m close: `{close:.2f}` > High `{rh:.2f}`\n"
-                    f"Watching for re-entry (close back inside) → SHORT setup"
-                )
+                if not silent:
+                    send_telegram(
+                        f"⚠️ *{DISPLAY_SYMBOL} Breakout ABOVE range*\n"
+                        f"5m close: `{close:.2f}` > High `{rh:.2f}`\n"
+                        f"Watching for re-entry (close back inside) → SHORT setup"
+                    )
             elif close < rl:
                 STATE["breakout_dir"] = "down"
                 STATE["breakout_extreme"] = low
-                send_telegram(
-                    f"⚠️ *{DISPLAY_SYMBOL} Breakout BELOW range*\n"
-                    f"5m close: `{close:.2f}` < Low `{rl:.2f}`\n"
-                    f"Watching for re-entry (close back inside) → LONG setup"
-                )
+                if not silent:
+                    send_telegram(
+                        f"⚠️ *{DISPLAY_SYMBOL} Breakout BELOW range*\n"
+                        f"5m close: `{close:.2f}` < Low `{rl:.2f}`\n"
+                        f"Watching for re-entry (close back inside) → LONG setup"
+                    )
         else:
             # Already broken out - update extreme, watch for re-entry or invalidation
             if STATE["breakout_dir"] == "up":
@@ -197,14 +202,15 @@ def check_breakout_and_entry(df_5m):
                     risk = sl - entry
                     tp = entry - RR * risk
                     STATE["trades_today"] += 1
-                    send_telegram(
-                        f"🔴 *SELL (SHORT) - {DISPLAY_SYMBOL}*\n"
-                        f"Entry (5m close back inside): `{entry:.2f}`\n"
-                        f"Stop-Loss (breakout extreme): `{sl:.2f}`\n"
-                        f"Take-Profit (2R): `{tp:.2f}`\n"
-                        f"Time: {ts.strftime('%Y-%m-%d %H:%M')} NY\n"
-                        f"Setup #{STATE['trades_today']} today"
-                    )
+                    if not silent:
+                        send_telegram(
+                            f"🔴 *SELL (SHORT) - {DISPLAY_SYMBOL}*\n"
+                            f"Entry (5m close back inside): `{entry:.2f}`\n"
+                            f"Stop-Loss (breakout extreme): `{sl:.2f}`\n"
+                            f"Take-Profit (2R): `{tp:.2f}`\n"
+                            f"Time: {ts.strftime('%Y-%m-%d %H:%M')} NY\n"
+                            f"Setup #{STATE['trades_today']} today"
+                        )
                     STATE["breakout_dir"] = None
                     STATE["breakout_extreme"] = None
             elif STATE["breakout_dir"] == "down":
@@ -216,14 +222,15 @@ def check_breakout_and_entry(df_5m):
                     risk = entry - sl
                     tp = entry + RR * risk
                     STATE["trades_today"] += 1
-                    send_telegram(
-                        f"🟢 *BUY (LONG) - {DISPLAY_SYMBOL}*\n"
-                        f"Entry (5m close back inside): `{entry:.2f}`\n"
-                        f"Stop-Loss (breakout extreme): `{sl:.2f}`\n"
-                        f"Take-Profit (2R): `{tp:.2f}`\n"
-                        f"Time: {ts.strftime('%Y-%m-%d %H:%M')} NY\n"
-                        f"Setup #{STATE['trades_today']} today"
-                    )
+                    if not silent:
+                        send_telegram(
+                            f"🟢 *BUY (LONG) - {DISPLAY_SYMBOL}*\n"
+                            f"Entry (5m close back inside): `{entry:.2f}`\n"
+                            f"Stop-Loss (breakout extreme): `{sl:.2f}`\n"
+                            f"Take-Profit (2R): `{tp:.2f}`\n"
+                            f"Time: {ts.strftime('%Y-%m-%d %H:%M')} NY\n"
+                            f"Setup #{STATE['trades_today']} today"
+                        )
                     STATE["breakout_dir"] = None
                     STATE["breakout_extreme"] = None
 
@@ -232,7 +239,25 @@ def check_breakout_and_entry(df_5m):
 
 def main():
     log.info("4-Hour Range Strategy bot starting (BTCUSD, Telegram alerts only)...")
-    send_telegram(f"🤖 4-Hour Range Bot started for {DISPLAY_SYMBOL}. Monitoring NY midnight-4AM range + 5m breakout/re-entry.")
+
+    # --- Silent catch-up: figure out today's range and any in-progress breakout
+    # state WITHOUT replaying historical signals as if they just happened. ---
+    try:
+        df_1h = get_1h_data()
+        if not df_1h.empty:
+            update_range(df_1h)  # this DOES send one "range locked" message, which is fine
+
+        df_5m = get_5m_data()
+        if not df_5m.empty:
+            check_breakout_and_entry(df_5m, silent=True)
+        log.info(
+            f"Catch-up complete. breakout_dir={STATE['breakout_dir']}, "
+            f"trades_today={STATE['trades_today']}, last_5m_ts={STATE['last_5m_ts']}"
+        )
+    except Exception as e:
+        log.error(f"Error during startup catch-up: {e}")
+
+    send_telegram(f"🤖 4-Hour Range Bot (re)started for {DISPLAY_SYMBOL}. Live signals from now on.")
 
     while True:
         try:
@@ -242,7 +267,7 @@ def main():
 
             df_5m = get_5m_data()
             if not df_5m.empty:
-                check_breakout_and_entry(df_5m)
+                check_breakout_and_entry(df_5m, silent=False)
 
         except Exception as e:
             log.error(f"Error in main loop: {e}")
