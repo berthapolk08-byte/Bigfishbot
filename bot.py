@@ -37,7 +37,7 @@ DISPLAY_SYMBOL = "BTCUSD"
 BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
 NY_TZ = pytz.timezone("America/New_York")
 RANGE_HOURS = 4              # first N hours of the NY day define the range
-POLL_SECONDS = 20           # how often to check for new closed 5m candles
+POLL_SECONDS = 10           # how often to check for new closed 5m candles
 RR = 2.0                    # take-profit risk:reward multiple
 
 STATE = {
@@ -100,6 +100,19 @@ def get_1h_data():
 def get_5m_data():
     """Fetch recent 5m candles from Binance, indexed in NY time."""
     return fetch_klines("5m", limit=576)  # last 2 days
+
+
+def get_live_price(fallback=None):
+    """Fetch the current live BTCUSDT price from Binance (real-time ticker, not a candle).
+    Falls back to the given price (e.g. the candle close) if the live fetch fails,
+    so a signal is never silently dropped due to a network hiccup."""
+    try:
+        r = requests.get("https://api.binance.com/api/v3/ticker/price", params={"symbol": BINANCE_SYMBOL}, timeout=5)
+        r.raise_for_status()
+        return float(r.json()["price"])
+    except Exception as e:
+        log.warning(f"Live price fetch failed, using fallback: {e}")
+        return fallback
 
 
 def reset_state_for_new_day(day):
@@ -177,18 +190,22 @@ def check_breakout_and_entry(df_5m, silent=False):
                 STATE["breakout_dir"] = "up"
                 STATE["breakout_extreme"] = high
                 if not silent:
+                    live = get_live_price(fallback=close)
                     send_telegram(
                         f"⚠️ *{DISPLAY_SYMBOL} Breakout ABOVE range*\n"
                         f"5m close: `{close:.2f}` > High `{rh:.2f}`\n"
+                        f"Live price now: `{live:.2f}`\n"
                         f"Watching for re-entry (close back inside) → SHORT setup"
                     )
             elif close < rl:
                 STATE["breakout_dir"] = "down"
                 STATE["breakout_extreme"] = low
                 if not silent:
+                    live = get_live_price(fallback=close)
                     send_telegram(
                         f"⚠️ *{DISPLAY_SYMBOL} Breakout BELOW range*\n"
                         f"5m close: `{close:.2f}` < Low `{rl:.2f}`\n"
+                        f"Live price now: `{live:.2f}`\n"
                         f"Watching for re-entry (close back inside) → LONG setup"
                     )
         else:
@@ -203,8 +220,10 @@ def check_breakout_and_entry(df_5m, silent=False):
                     tp = entry - RR * risk
                     STATE["trades_today"] += 1
                     if not silent:
+                        live = get_live_price(fallback=entry)
                         send_telegram(
                             f"🔴 *SELL (SHORT) - {DISPLAY_SYMBOL}*\n"
+                            f"Live price now: `{live:.2f}`\n"
                             f"Entry (5m close back inside): `{entry:.2f}`\n"
                             f"Stop-Loss (breakout extreme): `{sl:.2f}`\n"
                             f"Take-Profit (2R): `{tp:.2f}`\n"
@@ -223,8 +242,10 @@ def check_breakout_and_entry(df_5m, silent=False):
                     tp = entry + RR * risk
                     STATE["trades_today"] += 1
                     if not silent:
+                        live = get_live_price(fallback=entry)
                         send_telegram(
                             f"🟢 *BUY (LONG) - {DISPLAY_SYMBOL}*\n"
+                            f"Live price now: `{live:.2f}`\n"
                             f"Entry (5m close back inside): `{entry:.2f}`\n"
                             f"Stop-Loss (breakout extreme): `{sl:.2f}`\n"
                             f"Take-Profit (2R): `{tp:.2f}`\n"
